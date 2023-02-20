@@ -1,0 +1,191 @@
+[1pkt] Znajdź flagę. Flaga jest w formacie "FLAG{...}". Opisz, w jaki sposób
+udało się uzyskać flagę.
+Otwieramy plik retask.exe za pomocą IDA. W widoku tekstowym wykonujemy
+wyszukiwanie frazy "FLAG". W całym pliku znajdujemy tylko dwie instancje,
+obydwie zawierające tę samą flagę (warto zwrócić uwagę na fragment ',27h,'
+który konwertuje się po prostu do apostrofu):
+FLAG{gr3pp!ng-thr0ugh-str1ngs?-isn't-th4t-t0o-ez?}
+
+
+[3pkt] Flagę można również wyświetlić w grze. Opisz, jak sprawić, by
+niezmodyfikowana gra wyświetliła tę flagę.
+Ponownie wyszukujemy w widoku tekstowym "FLAG". Tym razem zwracamy uwagę na
+sekcję data, gdzie widoczne są deklaracje różnych tekstów, wyświetlanych
+w trakcie gry. O ile nad sąsiednimi tekstami widzimy
+dq offset show_text
+dq offset [nazwa_wiadomosci]
+to dla nas interesującego fragmentu widnieje
+dq offset player_mailbox
+dq offset aFlagGr3ppNgThr
+Przeglądając nieco więcej sekcji data podejrzewamy, że może to być istotna
+wskazówka odn. tego, gdzie w grze da się wyświetlić flagę. W kodzie istnieje
+funkcja player_mailbox(), przechodzimy więc do niej i poddajemy analizie.
+Od razu zauważamy podejrzane wywołanie funkcji check() z argumentem 5,
+a zaraz po niej instrukcję test na wyniku funkcji check() i skok wykonywany
+tylko wtedy, gdy funkcja check zwróci 1 (true). Zauważamy, że wykonanie skoku
+nie pozwala na zapisanie w rcx domyślnej wiadomości ze skrzynki pocztowej -
+zamiast tego wykonuje skok do show_text() z aktualną, nieznaną nam zawartością
+rejestru rcx. Jeśli więc spowodujemy, by check() zwróciło 1 (true), to dowiemy
+się jaką wiadomość gra próbuje przed nami ukryć.
+Przechodzimy do funkcji check() i analizujemy jej działanie.
+- ustawia eax na 1
+- przesuwa bity eax w lewo o podaną wartość (u nas 5, a więc eax = ...xx100000)
+- cdqe (rozszerza eax na całe rdx z zachowaniem znaku, u nas 0 - nieujemność)
+- wykonuje test (bitowy AND) wartości cs:qword_140011A38 z wartością rax
+- setnz ustawia al na 1 (true), jeśli wynik test jest niezerowy
+Sprawdzamy, czym jest qword_140011A38. IDA przenosi nas do sekcji data, gdzie
+w tej linii widnieje:
+qword_140011A38 dq ?                    ; DATA XREF: mark+9↑w
+                                        ; clear+B↑w ...
+W obydwie zakomentowane pozycje możemy kliknąć. 
+Pierwsza przenosi nas do funkcji mark(), w której z kolei jest widoczne:
+mark            proc near               ; CODE XREF: overworld_keypress+62↓j
+Pamiętając, że szukamy sposobu na wyświetlenie flagi w grze, widoczne
+overworld_keypress od razu wywołuje skojarzenia z potencjalną możliwością
+interakcji gry z użytkownikiem. Zanim do niej przejdziemy, zauważamy jeszcze
+jedną rzecz - funkcja mark() jest bardzo podobna do check(), przy czym zamiast
+instrukcji test widzimy tu or - możliwe zatem, że poprzez wywołania mark()
+jesteśmy w stanie wpłynąć na wynik check()!
+Najpierw jednak przechodzimy do funkcji overworld_keypress().
+Przeanalizujmy jej kod zapisany w języku C:
+if ( (_DWORD)a1 == 32 )
+{
+  if ( gTextboxContents )
+  {
+    return textbox_advance(a1, a2, (unsigned int)a1);
+  }
+  else if ( !byte_140013998 && !gLockControls )
+  {
+    return overworld_interact(a1, a2, (unsigned int)a1);
+  }
+}
+else
+{
+  v3 = dword_140011A44;
+  if ( asc_14000A100[dword_140011A44] == ((unsigned int)a1 ^ 0x6A) )
+  {
+    ++dword_140011A44;
+    if ( v3 == 13 )
+    {
+      dword_140011A44 = 0;
+      return mark(5i64);
+    }
+  }
+}
+Warunek if jest dosyć oczywisty - jeśli wciśnięta została spacja (kod znaku 32)
+to odbywa się interakcja z elementami gry. W przeciwnym razie wykonuje się
+kod wewnątrz najbardziej zewnętrznego else. To, co przykuwa naszą uwagę, to
+return mark(5i64).
+Jeśli uda nam się doprowadzić do tego wywołania, to bardzo możliwe, że
+następnie check(5) zwróci 1 (true), a to jest naszym aktualnym celem! Najpierw
+jednak po kolei:
+v3 = dword_140011A44;
+nie mówi nam zbyt wiele, przypisanie wartości.
+if ( asc_14000A100[dword_140011A44] == ((unsigned int)a1 ^ 0x6A) )
+dword_140011A44 jest indeksem tablicy asc_14000A100. Sama tablica znajduje się
+w sekcji rdata i jest równa (po zamianie systemu base_16 na base_10):
+[9, 11, 4, 3, 2, 11, 16, 12, 6, 11, 13, 26, 6, 18, 0, 0]
+Warunek if sprawdza, czy wartość na którą aktualnie wskazuje indeks v3 jest
+równa xorowi kodu ostatnio wciśniętego klawisza z liczbą 106 (a więc należy
+wprowadzić jakąś sekwencję znaków).
+++dword_140011A44;
+jeśli tak, to indeks jest zwiększany o 1.
+if ( v3 == 13 )
+  {
+    dword_140011A44 = 0;
+    return mark(5i64);
+  }
+jeśli wprowadzono poprawnie 14 (0 .. 13) znaków, to indeks jest zerowany oraz
+zwracany jest wynik wywołania mark(5).
+Nie pozostaje nam nic innego, niż odkodować oczekiwaną sekwencję znaków
+i wypróbować ją w grze. Korzystając z dowolnego kalkulatora xor i przemienności
+tej operacji otrzymujemy z tablicy asc_14000A100 pierwszych 14 znaków:
+106 ^ 9  = 99  = c
+106 ^ 11 = 97  = a
+106 ^ 4  = 110 = n
+106 ^ 3  = 105 = i
+106 ^ 2  = 104 = h
+106 ^ 11 = 97  = a
+106 ^ 16 = 122 = z
+106 ^ 12 = 102 = f
+106 ^ 6  = 108 = l
+106 ^ 11 = 97  = a
+106 ^ 13 = 103 = g
+106 ^ 26 = 112 = p
+106 ^ 6  = 108 = l
+106 ^ 18 = 120 = x
+powstała z nich sekwencja to:
+canihazflagplx
+Czas sprawdzić, czy wprowadzenie sekwencji w grze przynosi zamierzony efekt.
+Uruchamiamy retask.exe, wychodzimy z domu przed skrzynkę na listy, wprowadzamy
+wyznaczoną sekwencję znaków i wciskając spację, wchodzimy w interakcję ze
+skrzynką na listy. W dymku dialogu zamiast domyślnej wiadomości naszym oczom
+ukazuje się flaga identyczna do tej, którą w poprzednim podpunkcie wyłuskaliśmy
+wprost z kodu.
+A zatem próba wyświetlenia flagi w niezmodyfikowanej grze
+FLAG{gr3pp!ng-thr0ugh-str1ngs?-isn't-th4t-t0o-ez?}
+zakończyła się sukcesem!
+
+
+[2pkt] Zmodyfikuj grę, aby można było chodzić przez ściany i inne obiekty,
+które normalnie blokują gracza.
+Zastanawiamy się najpierw, w jaki sposób gra obsługuje wciśnięcia klawiszy,
+pozwalające na interakcję z otoczeniem i ruch. Przeglądamy listę funkcji,
+sprawdzając za pomocą dekompilacji te, które sugerują związek z obsługą
+klawiszy, aż trafiamy na handle_movement_input. Odkrywamy, że handler korzysta
+z tablicy obrazującej całą klawiaturę, a konkretnie status każdego jej klawisza
+( == 0 oznacza nieaktywny, != 0 oznacza aktywny). W zależności od wciśniętego
+klawisza jest wywoływana funkcja player_step. Przechodzimy do niej, naszą uwagę
+zwracają object_can_move oraz object_step, korzystające z wyniku 
+object_can_move. Domyślamy się, że to object_can_move odpowiada za ewentualne
+blokowanie ruchu gracza. Przechodzimy do funkcji i od razu zauważamy, że zwraca
+ona 0 lub 1 w oparciu o dosyć złożone wyrażenie logiczne (nazwy funkcji
+zawierające słowa collision, passable utwierdzają nas w przekonaniu, że
+podążamy dobrym tropem). Przełączamy się spowrotem na kod w assemblerze.
+Zauważamy, że wewnątrz całej funkcji są dwa retn, przechodzimy więc do analizy
+wartości znajdującej się w rejestrze rax (a dokładnie al, ponieważ interesuje
+nas czy jest to 0 czy 1) w momencie zwracania wyniku. Dla pierwszego z retn
+kilka instrukcji powyżej widzimy
+mov	al, 1
+co oznacza, że ten retn zawsze zwraca wartość 1. Dla drugiego retn widzimy
+natomiast jako ostatnią operację na rejestrze rax
+xor	al, al
+która może ustawić zwracaną wartość al na 0. Próbujemy więc podmienić
+tę instrukcję na identyczną dla pierwszego retn
+xor	al, al  ->  mov	al, 1
+i sprawdzamy, czy taka minimalna zmiana przyniosła oczekiwany efekt. Istotnie,
+możemy teraz do woli przechodzić przez blokujące nas uprzednio ściany
+i obiekty, a więc modyfikacja gry zakończyła się oczekiwanym sukcesem!
+
+
+[4pkt] Spraw, aby chodzić przez ściany dało się tylko trzymając klawisz Shift
+(wystarczy obsłużyć tylko jeden czyli lewy albo prawy).
+UWAGA - W tym podpunkcie wyjątkowo skorzystamy z x64gdb zamiast IDA.
+Zastanówmy się najpierw, jak ideowo chcielibyśmy zrealizować ten podpunkt.
+Wiemy, że w funkcji handle_movement_input jest dostępna tablica obrazująca stan
+całej klawiatury. Analizując kod tej funkcji w assemblerze, zauważamy w niej
+wielokrotne odwołania do pamięci pod adresem [rax+y], gdzie y jest pewnym
+offsetem, odpowiadającym klawiszom strzałek, oraz że dla dowolnej wciśniętej
+strzałki następuje skok do player_step, a więc również w player_step mamy
+dostęp do owej tablicy. Możemy przy okazji eksperymentując nieco odnaleźć, pod
+jakim numerem znajduje się któryś z Shift'ów. Dla LEWEGO SHIFTA okazuje się to
+być 0xE1. Zauważmy teraz, że za instrukcjami funkcji player_step znajduje się
+wolna przestrzeń. Moglibyśmy wykorzystać tę wolną przestrzeń i umieścić w niej
+wstawkę własnego kodu, sprawdzającą czy wciśnięty jest LEWY SHIFT i wykonującą
+adekwatny do tego skok. Pozostaje się zastanowić, skąd wykonywać skok do naszej
+wstawki tak, aby zachować adres tablicy obrazującej klawiaturę. Zauważamy, że
+możemy do tego wykorzystać zapisany pod adresem 0x2C9E skok 
+je	short 0x2CAE
+który podmieniamy na
+je	short 0x2CE4
+Dzięki temu program przejdzie bezpośrednio do naszej wstawki. Ma ona
+następujący kod:
+mov	al, [rax+0xE1] // zapisz w al, czy LEWY SHIFT jest wciśnięty
+cmp	al, 0          // sprawdź, czy LEWY SHIFT jest wciśnięty (ustawia ZF)
+je	0x2CAE         // jeśli nie, to wykonaj pierwotnie obecny w kodzie skok
+jmp	0x2CCB         // przeskocz za instrukcje mogące blokować ruch
+
+Wykonujemy patch i sprawdzamy, czy zmiany przyniosły oczekiwany efekt.
+Istotnie, możemy teraz przechodzić przez ściany i przeszkody tylko wtedy, gdy
+wciskamy jednocześnie klawisz LEWY SHIFT. A więc modyfikacja gry ponownie
+zakończyła się sukcesem!
