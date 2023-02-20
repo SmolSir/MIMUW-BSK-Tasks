@@ -1,0 +1,47 @@
+-- Warmup --
+flag{now-you-see-me-now-you-dont}
+
+Analizujemy działanie funkcji warmup_chall(self). Zauważamy, że na wstępie losowana jest wartość modulo m = getPrime(1024). Sprawdzamy działanie tej funkcji, okazuje się, że zwraca ona N-bitową liczbę pierwszą, gdzie wiodącym bitem jest 1, zatem zwraca liczby pierwsze nie mniejsze niż 2**(N) i nie większe niż 2**(N+1) - 1.
+Następnie funkcja przyjmuje od klienta podstawę potęgowania z przedziału <2, m> i 1000-krotnie przyjmuje od klienta wartość guess, losuje wykładnik exp po czym sprawdza, czy klient odgadł wynik działania (base**exp) % m.
+Każde odgadnięcie to 1 punkt, nagrodą za zdobycie > 300 punktów jest flaga.
+Skorzystamy z prostej zależności - podając base = (m - 1) z własności operacji modulo mamy gwarancję, że wynikiem działania funkcji będzie -1 lub 1 (zależy od parzystości wylosowanego wykładnika. Ponadto (m - 1) != 1 ze względu na liczby generowane przez getPrime(1024), więc nigdy nie zajdzie 'if base < 2 or base >= m').
+Ponieważ mamy zdobyć co najmniej 300pkt, to wystarczy, że będziemy zawsze odpowiadać jedną z dwóch możliwych wartości (oczekiwany wynik to 500pkt, szanse na to, że nie zdobędziemy 300pkt są praktycznie zerowe).
+Aby dodatkowo poprawić czas działania rozwiązania, najpierw wysyłamy 1000x naszą odpowiedź 1, a potem przetwarzamy kolejkujące się odpowiedzi guess> (potokowe przetwarzanie TCP).
+
+
+-- Stream cipher --
+flag{you-need-a-CSprng-for-stream-cipher}
+
+Tym razem analizujemy funkcję lcg_encrypt(key, data). Skupiamy się na tym, że buduje ona keystream długości co najmniej len(data), po czym jako wynik zwraca xor(keystream, data).
+Wiemy, że operacją odwrotną do xor jest również xor, oraz że keystream jest stały dla danego klucza key podanego konstruktorowi LcgPrng(), zatem będziemy szukać takiego klucza, żeby otrzymanym dla niego strumieniem odwrócić operację lcg_encrypt().
+W tym celu czynimy kolejną obserwację - serwer wysyła nam bezpośrednio zakodowaną flagę, bez żadnej otoczki. Oznacza to, że znamy pierwsze 5 bajtów otrzymanej od serwera zaszyfrowanej flagi (oznaczmy ją jako LCG-flagę) - są to 'flag{'. Znamy również ostatni bajt '}'.
+Ponieważ LcgPrng() korzysta z 64-bitowych liczb do tworzenia 56-bitowych masek doklejanych do keystream w funkcji lcg_encrypt(), to jeśli znalibyśmy fragment keystream kodujący 'flag{...', a więc pierwsze 8 znaków flagi, to jesteśmy w stanie odzyskać oryginalny klucz z konstruktora.
+W naszym przypadku 'flag{...' kodujemy za pomocą 56-bitowej maski otrzymanej z pierwszego wywołania next_bytes() dla obiektu LcgPrng(), a więc również pierwszego wywołania next(). Ponieważ będziemy odgadywać wartość 64-bitową po jednokrotnym wywołaniu next() (oznaczmy ją key_next), to aby odzyskać klucz key musimy skorzystać z arytmetyki modulo, w szczególności operacji modinv(). Zachodzi:
+ key_next                  ≡ key * a + c           mod m
+ key_next - c              ≡ key * a               mod m
+(key_next - c) * modinv(a) ≡ key * a * modinv(a)   mod m
+(key_next - c) * modinv(a) ≡ key                   mod m
+
+Stąd możemy już zapisać:
+key = ((key_next - c) % m) * modinv(a)
+
+Pozostaje odpowiedzieć na ostatnie pytanie - mamy 40 bitów (5 bajtów) z key_next, ale skąd wziąć pozostałe 24 bity? Ponieważ 2 ** 24 ≈ 1.67 * (10 ** 7), to możemy je w sensownym czasie odgadnąć! Będziemy dla każdego uzupełnienia 24-bitowego sprawdzać, czy lcg_encrypt(key, LCG-flag) daje poprawną flagę.
+Co oznacza, że flaga jest poprawna?
+1) jest tej samej długości, co LCG-flaga,
+2) jest zakończona '}'
+3) rozpoczyna się od 'flag{'
+4) wszystkie jej znaki są 'printable ASCII', a więc ich kody ASCII mieszczą się w przedziale <32, 126>
+
+Mogłoby się zdawać, że ta metoda będzie powodować wiele kolizji. Jeśli jednak zastanowimy się nad prawdopodobieństwem jej wystąpienia dla flagi zawierającej N znaków w części { ... }. Oczywiście prawdopodobieństwo otrzymania 0 lub 1 w wyniku xor to 1/2, a więc prawdopodobieństwo otrzymania konkretnego znaku ASCII to 1/2 ** 8 = 1/256. Mamy więc:
+1) P = 1
+2) P = 1/256
+3) P = 1/256 ** 5 (mamy 5 znaków we 'flag{')
+4) P = (126 - 32 + 2)/256 ** N = 3/8 ** N
+
+Łącznie P = (1/256 ** 6) * (3/8 ** N) ≈ 4.38 * (10 ** -30), zatem szanse wystąpienia kolizji są skrajnie niskie, niemalże zerowe. Dzięki temu możemy odgadnąć drugą flagę.
+
+
+-- Block cipher (easier) --
+(encrypted) e623936e471d974105642248b65579bd3869439357a95b97605d74318016fdf99020bc4005677cb7b910768536156ca8ddeacaad62900ab140cd99ec2c74751f8e7aa1c0e5f77a1c42b53c8b23892311
+
+Analizujemy działanie dostarczonych w module utils.py funkcji. Zdaje się, że nie jesteśmy w stanie otrzymać wiadomości od serwera bez znajomości klucza. Okazuje się jednak, że istnieje wyjątek od tej reguły - wysyłając pustą wiadomość jako plaintext i cyphertext otrzymujemy zakodowaną flagę!
